@@ -18,6 +18,20 @@ sudo rm -f /etc/ssh/ssh_host_*
 sudo journalctl --rotate || true
 sudo journalctl --vacuum-time=1s || true
 sudo rm -f /var/log/*.log /var/log/*/*.log || true
+cat > /etc/systemd/system/regen-ssh-hostkeys.service <<'EOF'
+[Unit]
+Description=Regenerate SSH host keys on first boot
+Before=ssh.service
+ConditionPathExistsGlob=!/etc/ssh/ssh_host_*_key
 
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ssh-keygen -A
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable regen-ssh-hostkeys.service
 # Sync filesystem before shutdown.
 sync
