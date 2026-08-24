@@ -33,5 +33,9 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 systemctl enable regen-ssh-hostkeys.service
+
+truncate -s 0 /etc/machine-id    
+rm -f /var/lib/dbus/machine-id
+ln -sf /etc/machine-id /var/lib/dbus/machine-id
 # Sync filesystem before shutdown.
 sync
