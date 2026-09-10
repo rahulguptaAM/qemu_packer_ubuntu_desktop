@@ -1,165 +1,176 @@
-name: Build Ubuntu Desktop Raw Image
+name: Build timeclock image
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
 
-permissions:
-  contents: read
+concurrency:
+  group: build
+  # false on purpose: a re-run would otherwise kill the build in flight and
+  # report it as "The operation was canceled".
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: applied-timeclock-ubuntu-24.04-server
+  BUILD_ROOT: /mnt/packer      # runner temp disk, far more space than /
 
 jobs:
   build:
-    name: Build Ubuntu Desktop raw image with Packer and QEMU
     runs-on: ubuntu-latest
-    timeout-minutes: 240
-
-    env:
-      IMAGE_NAME: applied-timeclock-ubuntu-24.04-desktop
-      ISO_VERSION: 24.04.4
-      ISO_NAME: ubuntu-24.04.4-desktop-amd64.iso
-      ISO_SHA256: 3a4c9877b483ab46d7c3fbe165a0db275e1ae3cfe56a5657e5a47c2f99a99d1e
-      ISO_URL: https://releases.ubuntu.com/releases/24.04.4/ubuntu-24.04.4-desktop-amd64.iso
+    timeout-minutes: 180
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install host dependencies
-        shell: bash
+      - name: Reclaim disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+
+      - name: Prepare build volume
         run: |
           set -euxo pipefail
+          sudo mkdir -p "$BUILD_ROOT"
+          sudo chown "$USER:$USER" "$BUILD_ROOT"
+          df -h / /mnt
 
-          sudo apt-get update
-          sudo apt-get install -y \
-            qemu-kvm \
-            qemu-utils \
-            ovmf \
-            xz-utils \
-            curl \
-            ca-certificates \
-            gnupg
-
-          echo "Available OVMF firmware files:"
-          ls -lah /usr/share/OVMF || true
-
-          test -f /usr/share/OVMF/OVMF_CODE_4M.fd
-          test -f /usr/share/OVMF/OVMF_VARS_4M.fd
-
-      - name: Enable KVM access on runner
-        shell: bash
+      # /dev/kvm exists on hosted runners but as root:kvm 0660, and the
+      # runner user is not in that group. usermod does not help because
+      # group changes miss the already-running session.
+      - name: Enable KVM group perms
         run: |
           set -euxo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -e /dev/kvm
+          ls -l /dev/kvm
 
-          if [ ! -e /dev/kvm ]; then
-            echo "ERROR: /dev/kvm is not available on this runner."
-            echo "Use a runner with KVM support, or change accelerator from kvm to tcg."
-            exit 1
+      - name: Install QEMU and OVMF
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-utils ovmf xorriso
+          ls -l /usr/share/OVMF/
+
+      - name: Locate OVMF firmware
+        id: ovmf
+        run: |
+          set -euxo pipefail
+          # Filename varies by release: OVMF_CODE.fd vs OVMF_CODE_4M.fd
+          CODE=$(find /usr/share/OVMF /usr/share/ovmf -name 'OVMF_CODE*.fd' ! -name '*secboot*' ! -name '*ms*' ! -name '*snakeoil*' 2>/dev/null | sort | head -1)
+          VARS=$(find /usr/share/OVMF /usr/share/ovmf -name 'OVMF_VARS*.fd' ! -name '*ms*' ! -name '*snakeoil*' 2>/dev/null | sort | head -1)
+          test -n "$CODE" && test -n "$VARS"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "vars=$VARS" >> "$GITHUB_OUTPUT"
+
+      - uses: hashicorp/setup-packer@main
+        with:
+          version: "1.11.2"
+
+      - name: Download ISO
+        run: |
+          set -euxo pipefail
+          ISO_URL=$(grep -A1 'variable "iso_url"' -m1 packer/*.pkr.hcl | grep -o 'https://[^"]*')
+          curl -fL --retry 5 --retry-delay 5 -o "$BUILD_ROOT/ubuntu.iso" "$ISO_URL"
+          SHA=$(sha256sum "$BUILD_ROOT/ubuntu.iso" | cut -d' ' -f1)
+          echo "ISO_SHA256=$SHA" >> "$GITHUB_ENV"
+          ls -lh "$BUILD_ROOT/ubuntu.iso"
+
+      - name: packer build
+        env:
+          PKR_VAR_iso_url: file:///mnt/packer/ubuntu.iso
+          PKR_VAR_output_dir: /mnt/packer/output
+          PKR_VAR_efi_code: ${{ steps.ovmf.outputs.code }}
+          PKR_VAR_efi_vars: ${{ steps.ovmf.outputs.vars }}
+          PACKER_LOG: 1
+          PACKER_LOG_PATH: packer-build.log
+        run: |
+          set -euxo pipefail
+          export PKR_VAR_iso_checksum="sha256:${ISO_SHA256}"
+          packer init  packer/
+          packer validate packer/
+          packer build packer/
+          ls -lh /mnt/packer/output/$IMAGE_NAME/
+
+      - name: Convert to raw and verify
+        run: |
+          set -euxo pipefail
+          cd "$BUILD_ROOT/output/$IMAGE_NAME"
+          qemu-img info "$IMAGE_NAME"
+          # Lossless: qcow2 is a container, guest-visible bytes are identical.
+          qemu-img convert -p -f qcow2 -O raw "$IMAGE_NAME" "${IMAGE_NAME}.raw"
+          qemu-img compare -f qcow2 -F raw "$IMAGE_NAME" "${IMAGE_NAME}.raw"
+          echo "Conversion verified."
+          # Hybrid-bootable check: expect an EFI System partition.
+          fdisk -l "${IMAGE_NAME}.raw"
+          rm -f "$IMAGE_NAME"
+
+      - name: Smoke test — does it boot under UEFI?
+        run: |
+          set -euxo pipefail
+          cp "${{ steps.ovmf.outputs.vars }}" /tmp/VARS.fd
+          # Fresh VARS = empty NVRAM, exactly like a new unit with a cloned
+          # SSD. This is what proves the BOOTX64.EFI fallback works.
+          timeout 180 qemu-system-x86_64 \
+            -m 3072 -smp 2 -enable-kvm -machine q35 \
+            -drive if=pflash,format=raw,unit=0,readonly=on,file=${{ steps.ovmf.outputs.code }} \
+            -drive if=pflash,format=raw,unit=1,file=/tmp/VARS.fd \
+            -drive file=$BUILD_ROOT/output/$IMAGE_NAME/${IMAGE_NAME}.raw,format=raw,if=none,id=d0 \
+            -device ahci,id=ahci -device ide-hd,drive=d0,bus=ahci.0 \
+            -netdev user,id=n0 -device e1000,netdev=n0 \
+            -nographic -serial mon:stdio > boot-test.log 2>&1 || true
+          if grep -qiE 'login:|Welcome to Ubuntu|systemd\[1\]|Reached target' boot-test.log; then
+            echo "Image reached userspace from an empty NVRAM."
+          else
+            echo "::warning::Could not confirm boot. Review boot-test.log."
+            tail -60 boot-test.log
           fi
 
-          sudo chmod 666 /dev/kvm
-          ls -lah /dev/kvm
+      - name: Compress
+        run: |
+          set -euxo pipefail
+          cd "$BUILD_ROOT/output/$IMAGE_NAME"
+          mv "${IMAGE_NAME}.raw" "${IMAGE_NAME}-${GITHUB_RUN_NUMBER}.raw"
+          xz -T0 -9 -v "${IMAGE_NAME}-${GITHUB_RUN_NUMBER}.raw"
+          sha256sum *.raw.xz > SHA256SUMS
+          cat > FLASH.txt <<EOF
+          Write to the device (or a USB stick for testing):
 
-      - name: Install Packer
-        uses: hashicorp/setup-packer@main
+            xz -dc ${IMAGE_NAME}-${GITHUB_RUN_NUMBER}.raw.xz \\
+              | sudo dd of=/dev/sdX bs=64M status=progress conv=fsync
+
+          Confirm the target with 'lsblk -o NAME,SIZE,MODEL,TRAN' first.
+          On the Geekland unit the internal SSD is /dev/sda (SATA).
+
+          The root filesystem grows to fill the disk automatically on first
+          boot, so no manual growpart is needed.
+
+          Build user: packer / packer-build-2026  (throwaway — rotate)
+          EOF
+          ls -lh
+
+      - uses: actions/upload-artifact@v4
         with:
-          version: latest
-
-      - name: Download Ubuntu Desktop ISO and verify checksum
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          mkdir -p iso
-
-          curl -L --fail --retry 5 --retry-delay 5 \
-            -o "iso/${ISO_NAME}" \
-            "${ISO_URL}"
-
-          echo "${ISO_SHA256} *iso/${ISO_NAME}" | sha256sum -c -
-
-      - name: Show repository structure
-        shell: bash
-        run: |
-          set -euxo pipefail
-          find . -maxdepth 4 -type f | sort
-
-      - name: Initialize Packer
-        shell: bash
-        run: |
-          set -euxo pipefail
-          packer init packer/ubuntu-24.04.pkr.hcl
-
-      - name: Validate Packer template
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          packer validate \
-            -var "image_name=${IMAGE_NAME}" \
-            -var "iso_url=file://${GITHUB_WORKSPACE}/iso/${ISO_NAME}" \
-            -var "iso_checksum=sha256:${ISO_SHA256}" \
-            packer/ubuntu-24.04.pkr.hcl
-
-      - name: Build QCOW2 image
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          PACKER_LOG=1 packer build \
-            -var "image_name=${IMAGE_NAME}" \
-            -var "iso_url=file://${GITHUB_WORKSPACE}/iso/${ISO_NAME}" \
-            -var "iso_checksum=sha256:${ISO_SHA256}" \
-            packer/ubuntu-24.04.pkr.hcl
-
-      - name: Convert QCOW2 to raw
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          mkdir -p dist
-
-          QCOW2_PATH="output/${IMAGE_NAME}/${IMAGE_NAME}.qcow2"
-          RAW_PATH="dist/${IMAGE_NAME}.raw"
-
-          test -f "${QCOW2_PATH}"
-
-          qemu-img info "${QCOW2_PATH}"
-
-          qemu-img convert \
-            -p \
-            -O raw \
-            "${QCOW2_PATH}" \
-            "${RAW_PATH}"
-
-          qemu-img info "${RAW_PATH}"
-
-      - name: Compress raw image
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          RAW_PATH="dist/${IMAGE_NAME}.raw"
-          COMPRESSED_PATH="${RAW_PATH}.xz"
-
-          test -f "${RAW_PATH}"
-
-          xz -T0 -9 -v "${RAW_PATH}"
-
-          test -f "${COMPRESSED_PATH}"
-
-          sha256sum "${COMPRESSED_PATH}" > "${COMPRESSED_PATH}.sha256"
-
-          ls -lh dist
-          cat "${COMPRESSED_PATH}.sha256"
-
-      - name: Upload compressed raw image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.IMAGE_NAME }}-raw-xz
-          path: |
-            dist/${{ env.IMAGE_NAME }}.raw.xz
-            dist/${{ env.IMAGE_NAME }}.raw.xz.sha256
-          retention-days: 7
+          name: ${{ env.IMAGE_NAME }}-${{ github.run_number }}
+          path: /mnt/packer/output/${{ env.IMAGE_NAME }}/
           compression-level: 0
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ github.run_number }}
+          path: |
+            packer-build.log
+            boot-test.log
+          retention-days: 7
+          if-no-files-found: ignore
