@@ -1,46 +1,57 @@
 #cloud-config
+# Ubuntu Server 24.04 autoinstall. Read by subiquity from the cidata volume.
+# Deliberately minimal — real configuration happens in scripts/.
+
 autoinstall:
   version: 1
+  interactive-sections: []
 
   locale: en_US.UTF-8
-
   keyboard:
     layout: us
-    variant: ""
-
   timezone: America/Los_Angeles
 
+  # Hostname is a throwaway. The service desk sets the real one after
+  # deployment, so nothing here should depend on it.
   identity:
-    hostname: applied-timeclock
-    username: ubuntu
-    # Password is: ubuntu
-    # Generate a replacement with: openssl passwd -6
-    password: "$6$ubuntu$6hDGC9q2MOzoNAIiNFw7OMsPpL4ix7Q0ovZKO9i267pE6IPdnTneR5.GYGbp9xlJA7935uj8mvBRpsZZOEemZ/"
+    hostname: timeclock-image
+    username: packer
+    # mkpasswd --method=SHA-512 --rounds=4096   (this is "packer-build-2026")
+    password: "$6$4ILStxwlc9Rh76Rf$RTdSg8V3NrtMCexFNUy4hSXq5a7UL4IR.PZto.UR5IQmMBn1a/Tkxi40FBrpJ5ZF53VAVDtxyDc4W8ui5717n1"
 
   ssh:
     install-server: true
+    # Must be true: Packer authenticates with a password during the build.
+    # 90-cleanup.sh turns this back off before the image is finished.
     allow-pw: true
 
+  # Whole disk, no LVM, no swap. Root lands on partition 2, matching the
+  # device's existing layout.
   storage:
     layout:
       name: direct
+    swap:
+      size: 0
 
+  # DHCP on any wired interface. The service desk assigns the real address
+  # after deployment, so nothing static belongs here.
+  network:
+    version: 2
+    ethernets:
+      all-en:
+        match:
+          name: "en*"
+        dhcp4: true
+        dhcp6: false
+        dhcp-identifier: mac
+
+  # Keep this list short — the rest goes in 10-base.sh where it is reviewable.
   packages:
     - openssh-server
-    - ca-certificates
-    - curl
-    - wget
-    - vim
-    - qemu-guest-agent
-    - cloud-init
 
   updates: security
 
   late-commands:
-    - curtin in-target --target=/target -- systemctl enable ssh
-    - curtin in-target --target=/target -- systemctl enable qemu-guest-agent
-    - curtin in-target --target=/target -- usermod -aG sudo ubuntu
-    - echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/90-ubuntu-packer
-    - chmod 0440 /target/etc/sudoers.d/90-ubuntu-packer
+    - curtin in-target -- bash -c 'echo "packer ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-packer && chmod 440 /etc/sudoers.d/90-packer'
 
   shutdown: reboot
