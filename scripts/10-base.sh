@@ -26,7 +26,9 @@ echo "== Graphics stack for the Avalonia app =="
 apt-get install -y --no-install-recommends \
   libgbm1 \
   libgl1-mesa-dri \
-  libegl1-mesa \
+  libegl-mesa0 \
+  libegl1 \
+  libgles2 \
   libinput10 \
   libdrm2 \
   libudev1
