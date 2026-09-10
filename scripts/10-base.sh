@@ -52,7 +52,7 @@ echo "== GRUB =="
 # wall-mounted clock goes dark. Not set on the vendor's image.
 # quiet/splash removed: on an appliance, boot messages are the only
 # diagnostic anyone gets on site.
-sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="consoleblank=0"/' /etc/default/grub
+sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="consoleblank=0 console=ttyS0,115200n8 console=tty0"/' /etc/default/grub
 sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=3/'                 /etc/default/grub
 sed -i 's/^GRUB_TIMEOUT_STYLE=.*/GRUB_TIMEOUT_STYLE=menu/'  /etc/default/grub
 grep -q '^GRUB_TIMEOUT_STYLE' /etc/default/grub || echo 'GRUB_TIMEOUT_STYLE=menu' >> /etc/default/grub
