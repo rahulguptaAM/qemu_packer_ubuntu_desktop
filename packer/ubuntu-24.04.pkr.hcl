@@ -90,7 +90,7 @@ source "qemu" "timeclock" {
 
   # Packer builds a small ISO labelled 'cidata' from these two files.
   # Subiquity reads the autoinstall config from it.
-  cd_files = ["./http/user-data", "./http/meta-data"]
+  cd_files = ["./packer/http/user-data", "./packer/http/meta-data"]
   cd_label = "cidata"
 
   # Interrupt GRUB and add the autoinstall flag, otherwise the installer
