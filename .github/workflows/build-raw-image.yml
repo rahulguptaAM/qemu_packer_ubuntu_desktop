@@ -12,7 +12,7 @@ concurrency:
 env:
   IMAGE_NAME: applied-timeclock-ubuntu-24.04-server
   BUILD_ROOT: /mnt/packer
-  ISO_URL: https://releases.ubuntu.com/24.04/ubuntu-24.04.3-live-server-amd64.iso
+  ISO_URL: https://mirror.pilotfiber.com/ubuntu-iso/24.04.3/ubuntu-24.04.3-live-server-amd64.iso
   # runner temp disk, far more space than /
 
 jobs:
