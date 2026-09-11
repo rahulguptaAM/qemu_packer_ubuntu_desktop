@@ -56,6 +56,34 @@ echo "== Interface naming =="
 rm -f /etc/systemd/network/*.link
 rm -f /etc/udev/rules.d/70-persistent-net.rules
 
+echo "== Network config =="
+# cloud-init writes /etc/netplan/50-cloud-init.yaml at install time with the
+# BUILD machine's MAC hardcoded in a match: block. That file ships inside the
+# image, so every other device fails the match and gets no network at all.
+#
+# Replace it with a wildcard config and stop cloud-init regenerating it.
+rm -f /etc/netplan/50-cloud-init.yaml
+
+printf 'network: {config: disabled}\n' \
+  > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+
+cat > /etc/netplan/01-netcfg.yaml <<'EOF'
+network:
+  version: 2
+  ethernets:
+    all-en:
+      match:
+        name: "en*"
+      dhcp4: true
+      dhcp6: false
+      # Identify by MAC rather than the machine-id-derived DUID. Without this
+      # a reimaged device looks like a brand-new host to DHCP, which can land
+      # it in a different VLAN than the same hardware had before.
+      dhcp-identifier: mac
+EOF
+chmod 600 /etc/netplan/01-netcfg.yaml
+netplan generate
+
 echo "== cloud-init =="
 # No metadata service on bare metal. Without this pin cloud-init spends
 # 30-120s hunting for one on every boot.
