@@ -113,7 +113,14 @@ systemctl enable getty@tty2.service
 
 echo "== SSH =="
 systemctl enable ssh
-
+echo "== Deploy SSH key =="
+mkdir -p /home/packer/.ssh
+cat > /home/packer/.ssh/authorized_keys <<'EOF'
+ssh-ed25519 AAAA...REPLACE_WITH_YOUR_PUBLIC_KEY you@laptop
+EOF
+chown -R packer:packer /home/packer/.ssh
+chmod 700 /home/packer/.ssh
+chmod 600 /home/packer/.ssh/authorized_keys
 echo "== Never sleep =="
 # A wall-mounted clock that suspends is a broken clock.
 systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
