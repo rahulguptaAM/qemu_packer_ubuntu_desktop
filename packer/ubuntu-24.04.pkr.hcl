@@ -36,7 +36,7 @@ variable "iso_checksum" {
 
 variable "disk_size" {
   type    = string
-  default = "12G"
+  default = "6G"
   # Server + app stack is ~4 GB. Grows to the device's 128 GB on first boot,
   # so this only needs to be big enough to build in.
 }
